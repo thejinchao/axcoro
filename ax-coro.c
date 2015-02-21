@@ -1,3 +1,27 @@
+/*
+copy from lwan (https://github.com/lpereira/lwan)
+commit sha-1: b2f7cbfba00041074240ab11b717165adf554c77
+*/
+
+/*
+* lwan - simple web server
+* Copyright (c) 2012 Leandro A. F. Pereira <leandro@hardinfo.org>
+*
+* This program is free software; you can redistribute it and/or
+* modify it under the terms of the GNU General Public License
+* as published by the Free Software Foundation; either version 2
+* of the License, or any later version.
+*
+* This program is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with this program; if not, write to the Free Software
+* Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+*/
+
 #define _GNU_SOURCE
 #include <assert.h>
 #include <limits.h>
@@ -21,10 +45,6 @@ typedef uintptr_t coro_context_t[7];
 typedef ucontext_t coro_context_t;
 #endif
 
-#ifdef USE_VALGRIND
-#include <valgrind/valgrind.h>
-#endif
-
 #define CORO_STACK_MIN		((3 * (PTHREAD_STACK_MIN)) / 2)
 
 #define ALWAYS_INLINE inline __attribute__((always_inline))
@@ -43,31 +63,13 @@ struct coro_switcher_t_ {
 	coro_context_t callee;
 };
 
-typedef struct coro_defer_t_	coro_defer_t;
-
-struct coro_defer_t_ {
-    coro_defer_t *next;
-    void (*func)();
-    void *data1;
-    void *data2;
-};
-
 struct coro_t_ {
     coro_switcher_t *switcher;
     coro_context_t context;
     int yield_value;
-
-#if !defined(NDEBUG) && defined(USE_VALGRIND)
-    unsigned int vg_stack_id;
-#endif
-
-    coro_defer_t *defer;
     void *data;
-
     bool ended;
 };
-
-static void coro_entry_point(coro_t *data, coro_function_t func);
 
 coro_switcher_t *coro_switcher_new(void)
 {
@@ -164,18 +166,6 @@ coro_entry_point(coro_t *coro, coro_function_t func)
     coro_yield(coro, return_value);
 }
 
-static void
-coro_run_deferred(coro_t *coro)
-{
-    for (coro_defer_t *defer = coro->defer; defer;) {
-        coro_defer_t *tmp = defer;
-        defer->func(defer->data1, defer->data2);
-        defer = tmp->next;
-        free(tmp);
-    }
-    coro->defer = NULL;
-}
-
 void
 coro_reset(coro_t *coro, coro_function_t func, void *data)
 {
@@ -183,8 +173,6 @@ coro_reset(coro_t *coro, coro_function_t func, void *data)
 
     coro->ended = false;
     coro->data = data;
-
-    coro_run_deferred(coro);
 
 #if defined(__x86_64__)
     coro->context[6 /* RDI */] = (uintptr_t) coro;
@@ -223,13 +211,7 @@ coro_new(coro_switcher_t *switcher, coro_function_t function, void *data)
         return NULL;
 
     coro->switcher = switcher;
-    coro->defer = NULL;
     coro_reset(coro, function, data);
-
-#if !defined(NDEBUG) && defined(USE_VALGRIND)
-    char *stack = (char *)(coro + 1);
-    coro->vg_stack_id = VALGRIND_STACK_REGISTER(stack, stack + CORO_STACK_MIN);
-#endif
 
     return coro;
 }
@@ -274,16 +256,6 @@ coro_resume(coro_t *coro)
 }
 
 ALWAYS_INLINE int
-coro_resume_value(coro_t *coro, int value)
-{
-    assert(coro);
-    assert(coro->ended == false);
-
-    coro->yield_value = value;
-    return coro_resume(coro);
-}
-
-ALWAYS_INLINE int
 coro_yield(coro_t *coro, int value)
 {
     assert(coro);
@@ -296,94 +268,6 @@ void
 coro_free(coro_t *coro)
 {
     assert(coro);
-#if !defined(NDEBUG) && defined(USE_VALGRIND)
-    VALGRIND_STACK_DEREGISTER(coro->vg_stack_id);
-#endif
-    coro_run_deferred(coro);
     free(coro);
 }
 
-static void
-coro_defer_any(coro_t *coro, void (*func)(), void *data1, void *data2)
-{
-    coro_defer_t *defer = malloc(sizeof(*defer));
-    if (UNLIKELY(!defer))
-        return;
-
-    assert(func);
-
-    /* Some uses require deferred statements are arranged in a stack. */
-    defer->next = coro->defer;
-    defer->func = func;
-    defer->data1 = data1;
-    defer->data2 = data2;
-    coro->defer = defer;
-}
-
-ALWAYS_INLINE void
-coro_defer(coro_t *coro, void (*func)(void *data), void *data)
-{
-    coro_defer_any(coro, func, data, NULL);
-}
-
-ALWAYS_INLINE void
-coro_defer2(coro_t *coro, void (*func)(void *data1, void *data2),
-            void *data1, void *data2)
-{
-    coro_defer_any(coro, func, data1, data2);
-}
-
-void *
-coro_malloc_full(coro_t *coro, size_t size, void (*destroy_func)())
-{
-    coro_defer_t *defer = malloc(sizeof(*defer) + size);
-    if (UNLIKELY(!defer))
-        return NULL;
-
-    defer->next = coro->defer;
-    defer->func = destroy_func;
-    defer->data1 = defer + 1;
-    defer->data2 = NULL;
-
-    coro->defer = defer;
-
-    return defer + 1;
-}
-
-static void nothing()
-{
-}
-
-inline void *
-coro_malloc(coro_t *coro, size_t size)
-{
-    return coro_malloc_full(coro, size, nothing);
-}
-
-char *
-coro_strdup(coro_t *coro, const char *str)
-{
-    size_t len = strlen(str) + 1;
-    char *dup = coro_malloc(coro, len);
-    if (LIKELY(dup))
-        memcpy(dup, str, len);
-    return dup;
-}
-
-char *
-coro_printf(coro_t *coro, const char *fmt, ...)
-{
-    va_list values;
-    int len;
-    char *tmp_str;
-
-    va_start(values, fmt);
-    len = vasprintf(&tmp_str, fmt, values);
-    va_end(values);
-
-    if (UNLIKELY(len < 0))
-        return NULL;
-
-    coro_defer(coro, CORO_DEFER(free), tmp_str);
-    return tmp_str;
-}
