@@ -34,8 +34,11 @@ function_b(coro_t* coro)
 }
 
 
-int main(int argc __attribute__((unused)), char* argv[] __attribute__((unused)))
+int main(int argc, char* argv[])
 {
+	(void)argc;
+	(void)argv;
+
 	coro_switcher_t* switcher = coro_switcher_new();
 	coro_t *coro_a = coro_new(switcher, function_a, "foo");
 	coro_t *coro_b = coro_new(switcher, function_b, "bar");
