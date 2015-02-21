@@ -17,7 +17,7 @@ if(CMAKE_COMPILER_IS_GNUCC)
 endif()
 
 
-add_library(axcoro STATIC ax-coro.c)
+add_library(axcoro STATIC ax-coro-linux.c)
 
-add_executable(axcoro-test ax-coro-test.c)
+add_executable(axcoro-test test.c)
 target_link_libraries(axcoro-test axcoro)
